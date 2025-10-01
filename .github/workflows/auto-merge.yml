@@ -1,0 +1,147 @@
+name: Auto Merge Branches into Develop and Main
+
+on:
+  schedule:
+    - cron: '59 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  get_dates:
+    runs-on: ubuntu-latest
+    outputs:
+      today: ${{ steps.get_date.outputs.today }}
+    steps:
+      - id: get_date
+        run: echo "today=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+  check_daily:
+    runs-on: ubuntu-latest
+    needs: get_dates
+    outputs:
+      changed: ${{ steps.set_output.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check daily branch for today's file
+        id: set_output
+        run: |
+          git fetch origin daily
+          git checkout origin/daily --no-track -b daily-latest
+          if git ls-tree -r --name-only HEAD | grep -q "${{ needs.get_dates.outputs.today }}"; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  check_problems:
+    runs-on: ubuntu-latest
+    needs: get_dates
+    outputs:
+      changed: ${{ steps.set_output.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check problems branch for changes in last 24h
+        id: set_output
+        run: |
+          git fetch origin problems
+          git checkout origin/problems --no-track -b problems-latest
+          changes=$(git log --since="24 hours ago" --name-only --pretty=format: | grep -v '^$' | sort | uniq)
+          if [ -n "$changes" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  merge_daily:
+    runs-on: ubuntu-latest
+    needs: check_daily
+    if: needs.check_daily.outputs.changed == 'true'
+    env:
+      AUTHOR_NAME: ${{ secrets.AUTHOR_NAME }}
+      AUTHOR_EMAIL: ${{ secrets.AUTHOR_EMAIL }}
+      PAT: ${{ secrets.PERSONAL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author (no output)
+        run: |
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
+
+      - name: Set remote to use PAT (no output)
+        run: |
+          git remote set-url origin https://x-access-token:${PAT}@github.com/${{ github.repository }}
+
+      - name: Merge daily into develop
+        run: |
+          git fetch origin
+          git checkout develop
+          git pull origin develop
+          git merge --no-ff origin/daily -m "Merge 'daily' into 'develop'"
+          git push origin develop
+
+  merge_problems:
+    runs-on: ubuntu-latest
+    needs: check_problems
+    if: needs.check_problems.outputs.changed == 'true'
+    env:
+      AUTHOR_NAME: ${{ secrets.AUTHOR_NAME }}
+      AUTHOR_EMAIL: ${{ secrets.AUTHOR_EMAIL }}
+      PAT: ${{ secrets.PERSONAL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author (no output)
+        run: |
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
+
+      - name: Set remote to use PAT (no output)
+        run: |
+          git remote set-url origin https://x-access-token:${PAT}@github.com/${{ github.repository }}
+
+      - name: Merge problems into develop
+        run: |
+          git fetch origin
+          git checkout develop
+          git pull origin develop
+          git merge --no-ff origin/problems -m "Merge 'problems' into 'develop'"
+          git push origin develop
+
+  merge_main:
+    runs-on: ubuntu-latest
+    needs: [merge_daily, merge_problems]
+    if: |
+      needs.merge_daily.result == 'success' || needs.merge_problems.result == 'success'
+    env:
+      AUTHOR_NAME: ${{ secrets.AUTHOR_NAME }}
+      AUTHOR_EMAIL: ${{ secrets.AUTHOR_EMAIL }}
+      PAT: ${{ secrets.PERSONAL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author (no output)
+        run: |
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
+
+      - name: Set remote to use PAT (no output)
+        run: |
+          git remote set-url origin https://x-access-token:${PAT}@github.com/${{ github.repository }}
+
+      - name: Merge develop into main
+        run: |
+          git fetch origin
+          git checkout main
+          git pull origin main
+          git merge --no-ff origin/develop -m "Merge 'develop' into 'main'"
+          git push origin main
